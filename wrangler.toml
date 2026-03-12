@@ -1,0 +1,16 @@
+name = "cloudflare"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-03-11"
+account_id = "07d4a1549593e39505d8b95ed2ad9dcd"
+
+[build]
+command = "cargo install -q worker-build && worker-build --release"
+
+[durable_objects] 
+bindings = [
+    { name = "STREAM_VIEWER_COUNT", class_name = "StreamViewerCounter"}
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = [ "StreamViewerCounter" ]
