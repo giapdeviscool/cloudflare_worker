@@ -10,6 +10,15 @@ fn extract_stream_id(req : &Request) -> String {
     viewer_id
 }
 
+async fn set_header_response_hls(response : &mut Response) -> Result<()>{
+    response.headers_mut().set("Content-Type", "application/vnd.apple.mpegurl")?;
+    response.headers_mut().set("Access-Control-Allow-Origin", "*")?;
+    response.headers_mut().set("Access-Control-Expose-Headers", "Content-Length,Content-Type,Content-Range,cf-cache-status,x-cache,cdn-cache")?;
+    response.headers_mut().set("Cache-Control", "public, max-age=2")?;
+    response.headers_mut().set("Vary", "Origin, Accept-Encoding")?;
+    Ok(())
+}
+
 #[derive(Deserialize, Debug)]
 pub struct CountResponse {
     count: usize,
@@ -30,7 +39,7 @@ async fn fetch(req: Request, env: Env, _ctx : Context) -> Result<Response> {
     }
     let quality_collections = 
         vec![
-            "origin",
+            "original",
             "720p",
             "480p",
             "360p"
@@ -46,8 +55,10 @@ async fn fetch(req: Request, env: Env, _ctx : Context) -> Result<Response> {
             let _app_name = paths_segments[1];
             let stream_id = paths_segments[2];
             let mut stream_hls_method = paths_segments[2];
+           
             if quality_collections.contains(&paths_segments[2]) {
                 stream_hls_method = paths_segments[3];
+                
             }
             let viewer_id = extract_stream_id(&req);
             let stream_counter_do = env.durable_object("STREAM_VIEWER_COUNT")?;
@@ -87,8 +98,10 @@ async fn fetch(req: Request, env: Env, _ctx : Context) -> Result<Response> {
             let _app_name = paths_segments[0];
             let stream_id = paths_segments[1];
             let mut stream_hls_method = paths_segments[2];
+            let mut quality="";
             if quality_collections.contains(&paths_segments[2]) {
-                stream_hls_method = paths_segments[3];
+                quality = paths_segments[2];
+                stream_hls_method = paths_segments[3];               
             }
             let viewer_id = extract_stream_id(&req);
             let stream_counter_do = env.durable_object("STREAM_VIEWER_COUNT")?;
@@ -117,8 +130,20 @@ async fn fetch(req: Request, env: Env, _ctx : Context) -> Result<Response> {
                 "https://stream_viewer_counter.worker/connect?stream_id={}&viewer_id={}", 
                 &stream_id, &viewer_id
             )).await?;
-            Response::ok("New Viewer Connected")
+            let mut cdn_url = format!("https://hls-r2-dev.ermis.network/streams/Streaming-demo/{}/{}",stream_id, stream_hls_method);
+            //handle response
+            if quality.len() != 0 {
+                cdn_url = format!("https://hls-r2-dev.ermis.network/streams/Streaming-demo/{}/{}/{}",stream_id,quality,stream_hls_method);
+            } 
+            let mut cdn_res = Fetch::Url(cdn_url.parse()?).send().await?;
+            let cdn_m3u8_body = cdn_res.text().await?;
+            // Tạo response với headers
+            let mut response = Response::ok(&cdn_m3u8_body)?;
+            let _ = set_header_response_hls(&mut response).await;
+            Ok(response)
         }
-        _ => Response::error("Not found", 404)
+        _ => {
+            Response::error("Not found", 404)
+        }
     }
 }
