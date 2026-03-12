@@ -1,0 +1,21 @@
+
+## How to use this worker
+
+#### 1 install wrangler
+
+```clf
+npm i -g wrangler
+```
+
+
+#### 2 login to cloudflare account 
+
+```clf
+  wrangler login
+```
+vd : socket.join(room_id);
+
+#### 3 deploy worker
+```ws
+  wrangler deploy && wrangler tail (for watch log)
+```
