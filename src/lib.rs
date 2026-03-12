@@ -46,15 +46,24 @@ async fn fetch(req: Request, env: Env, _ctx : Context) -> Result<Response> {
             let stream_counter_do_stub = stream_counter_do.id_from_name(&stream_id)?.get_stub()?;
             if stream_hls_method == "counter" {
                 let mut response = stream_counter_do_stub.fetch_with_str(&format!(
-                "https://stream_viewer_counter.worker/count?stream_id={}", 
+                "https://stream_viewer_counter.worker/totalviewer?stream_id={}", 
                 &stream_id
                 )).await?;
                 let body: CountResponse = response.json().await?;
                 console_log!("Increment response: {:#?}", body);
                 return Response::ok(json!({"count":body.count}).to_string());
             }
+            if stream_hls_method == "disconnect" {
+                let mut response = stream_counter_do_stub.fetch_with_str(&format!(
+                "https://stream_viewer_counter.worker/disconnect?stream_id={}&viewer_id={}", 
+                &stream_id, &viewer_id
+                )).await?;
+                let body: CountResponse = response.json().await?;
+                console_log!("Increment response: {:#?}", body);
+                return Response::ok(json!({"count":body.count}).to_string());
+            }
             stream_counter_do_stub.fetch_with_str(&format!(
-                "https://stream_viewer_counter.worker/increment?stream_id={}&viewer_id={}", 
+                "https://stream_viewer_counter.worker/connect?stream_id={}&viewer_id={}", 
                 &stream_id, &viewer_id
             )).await?;
             Response::ok("New Viewer Connected")

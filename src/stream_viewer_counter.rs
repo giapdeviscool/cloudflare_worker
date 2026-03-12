@@ -25,7 +25,7 @@ impl DurableObject for StreamViewerCounter {
         let url = req.url()?;
         let path = url.path();
         match path {
-            "/increment" => {
+            "/connect" => {
                 let stream_id = url.query_pairs()
                     .find(|(k, _)| k == "stream_id")
                     .map(|(_, v)| v.to_string())
@@ -39,7 +39,7 @@ impl DurableObject for StreamViewerCounter {
                 self.increment_viewer_count(&stream_id, &viewer_id).await;
                 return Response::ok("Viewer count incremented");
             }
-            "/count" => {
+            "/totalviewer" => {
                 let stream_id = url.query_pairs()
                     .find(|(k, _)| k == "stream_id")
                     .map(|(_, v)| v.to_string())
@@ -47,6 +47,20 @@ impl DurableObject for StreamViewerCounter {
                 let count = self.get_viewer_count(&stream_id).await;
                 let body = json!({"count":count}).to_string();
                 return Response::ok(&body)
+            }
+            "/disconnect" => {
+                let stream_id = url.query_pairs()
+                    .find(|(k, _)| k == "stream_id")
+                    .map(|(_, v)| v.to_string())
+                    .unwrap_or("guest".to_string());
+
+                let viewer_id = url.query_pairs()
+                    .find(|(k, _)| k == "viewer_id")
+                    .map(|(_, v)| v.to_string())
+                    .unwrap_or("guest".to_string());
+                
+                self.remove_viewer_count(&stream_id, &viewer_id).await;
+                return Response::ok("Viewer disconnected");
             }
             _ => Response::error("Not found", 404)
         }
@@ -77,6 +91,14 @@ impl StreamViewerCounter {
                 viewer_session.len()
             }
             Entry::Vacant(_) => 0,
+        }
+    }
+
+    pub async fn remove_viewer_count(&self, stream_id: &str, viewer_id: &str) {
+        let viewer_counter = self.viewer_counter.clone();
+        if let Entry::Occupied(entry) = viewer_counter.entry_async(stream_id.to_string()).await {
+            let viewer_list = entry.get();
+            let _ = viewer_list.remove_async(viewer_id).await;
         }
     }
 }
