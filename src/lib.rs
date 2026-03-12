@@ -1,5 +1,3 @@
-use std::sync::Arc;
-use scc::{HashMap, hash_map::Entry};
 
 use serde::Deserialize;
 use serde_json::json;
@@ -20,19 +18,26 @@ pub struct CountResponse {
 #[event(fetch)]
 async fn fetch(req: Request, env: Env, _ctx : Context) -> Result<Response> {
 
-    
-    let url = req.url()?;
+    let url =req.url()?;
     let path = url.path();
+    let origin = req.headers().get("origin").ok().flatten().unwrap_or("".to_string());
     if req.method() == Method::Options {
         let mut response = Response::ok("")?;
-        response.headers_mut().set("Access-Control-Allow-Origin", "https://stream-gate-i9.ermis.network")?;
+        response.headers_mut().set("Access-Control-Allow-Origin", &origin)?;
         response.headers_mut().set("Access-Control-Allow-Methods", "GET, OPTIONS")?;
         response.headers_mut().set("Access-Control-Allow-Headers", "x-viewer-id")?;
         return Ok(response);
     }
-
+    let quality_collections = 
+        vec![
+            "origin",
+            "720p",
+            "480p",
+            "360p"
+        ];
     match path {
-        p if p.starts_with("/stream-gate/") => {
+        //for stream-gate server
+        p if p.starts_with("/stream-gate/") => {     
             let paths_segments: Vec<&str> = p.trim_start_matches("/stream-gate/").split('/').collect();
             if paths_segments.len() < 4 {
                 return Response::error("Invalid path", 400);
@@ -40,7 +45,10 @@ async fn fetch(req: Request, env: Env, _ctx : Context) -> Result<Response> {
             let _hls = paths_segments[0];
             let _app_name = paths_segments[1];
             let stream_id = paths_segments[2];
-            let stream_hls_method = paths_segments[3];
+            let mut stream_hls_method = paths_segments[2];
+            if quality_collections.contains(&paths_segments[2]) {
+                stream_hls_method = paths_segments[3];
+            }
             let viewer_id = extract_stream_id(&req);
             let stream_counter_do = env.durable_object("STREAM_VIEWER_COUNT")?;
             let stream_counter_do_stub = stream_counter_do.id_from_name(&stream_id)?.get_stub()?;
@@ -49,6 +57,7 @@ async fn fetch(req: Request, env: Env, _ctx : Context) -> Result<Response> {
                 "https://stream_viewer_counter.worker/totalviewer?stream_id={}", 
                 &stream_id
                 )).await?;
+                
                 let body: CountResponse = response.json().await?;
                 console_log!("Increment response: {:#?}", body);
                 return Response::ok(json!({"count":body.count}).to_string());
@@ -59,9 +68,51 @@ async fn fetch(req: Request, env: Env, _ctx : Context) -> Result<Response> {
                 &stream_id, &viewer_id
                 )).await?;
                 let body: CountResponse = response.json().await?;
+                console_log!("Decrement response: {:#?}", body);
+                return Response::ok(json!({"count":body.count}).to_string());
+            }
+            
+            stream_counter_do_stub.fetch_with_str(&format!(
+                "https://stream_viewer_counter.worker/connect?stream_id={}&viewer_id={}", 
+                &stream_id, &viewer_id
+            )).await?;
+            Response::ok("New Viewer Connected")
+        }
+        //for cdn streams server
+        p if p.starts_with("/streams/") => {
+            let paths_segments: Vec<&str> = p.trim_start_matches("/streams/").split('/').collect();
+            if paths_segments.len() < 3 {
+                return Response::error("Invalid path", 400);
+            }
+            let _app_name = paths_segments[0];
+            let stream_id = paths_segments[1];
+            let mut stream_hls_method = paths_segments[2];
+            if quality_collections.contains(&paths_segments[2]) {
+                stream_hls_method = paths_segments[3];
+            }
+            let viewer_id = extract_stream_id(&req);
+            let stream_counter_do = env.durable_object("STREAM_VIEWER_COUNT")?;
+            let stream_counter_do_stub = stream_counter_do.id_from_name(&stream_id)?.get_stub()?;       
+            if stream_hls_method == "counter" {
+                let mut response = stream_counter_do_stub.fetch_with_str(&format!(
+                "https://stream_viewer_counter.worker/totalviewer?stream_id={}", 
+                &stream_id
+                )).await?;
+                
+                let body: CountResponse = response.json().await?;
                 console_log!("Increment response: {:#?}", body);
                 return Response::ok(json!({"count":body.count}).to_string());
             }
+            if stream_hls_method == "disconnect" {
+                let mut response = stream_counter_do_stub.fetch_with_str(&format!(
+                "https://stream_viewer_counter.worker/disconnect?stream_id={}&viewer_id={}", 
+                &stream_id, &viewer_id
+                )).await?;
+                let body: CountResponse = response.json().await?;
+                console_log!("Decrement response: {:#?}", body);
+                return Response::ok(json!({"count":body.count}).to_string());
+            }
+            
             stream_counter_do_stub.fetch_with_str(&format!(
                 "https://stream_viewer_counter.worker/connect?stream_id={}&viewer_id={}", 
                 &stream_id, &viewer_id
