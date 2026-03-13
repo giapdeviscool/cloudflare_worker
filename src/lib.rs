@@ -54,11 +54,11 @@ async fn fetch(req: Request, env: Env, _ctx : Context) -> Result<Response> {
             let _hls = paths_segments[0];
             let _app_name = paths_segments[1];
             let stream_id = paths_segments[2];
-            let mut stream_hls_method = paths_segments[2];
-           
-            if quality_collections.contains(&paths_segments[2]) {
-                stream_hls_method = paths_segments[3];
-                
+            let mut stream_hls_method = paths_segments[3];
+            let mut quality="";
+            if quality_collections.contains(&paths_segments[3]) {
+                stream_hls_method = paths_segments[4];
+                quality = paths_segments[3];
             }
             let viewer_id = extract_stream_id(&req);
             let stream_counter_do = env.durable_object("STREAM_VIEWER_COUNT")?;
@@ -87,7 +87,22 @@ async fn fetch(req: Request, env: Env, _ctx : Context) -> Result<Response> {
                 "https://stream_viewer_counter.worker/connect?stream_id={}&viewer_id={}", 
                 &stream_id, &viewer_id
             )).await?;
-            Response::ok("New Viewer Connected")
+            
+            let mut cdn_url = format!("https://stream-gate-i9.ermis.network/stream-gate/hls/Streaming-demo/{}/{}",stream_id, stream_hls_method);
+            //handle response
+            if quality.len() != 0 {
+                cdn_url = format!("https://stream-gate-i9.ermis.network/stream-gate/hls/Streaming-demo/{}/{}/{}",stream_id,quality,stream_hls_method);
+            } 
+            let mut cdn_res = Fetch::Url(cdn_url.parse()?).send().await?;
+            let cdn_m3u8_body = cdn_res.text().await?;
+            let url_segment = format!("https://stream-gate-i9.ermis.network/stream-gate/hls/Streaming-demo/{}/segment/", stream_id);
+            let url_session = format!("https://stream-gate-i9.ermis.network/stream-gate/hls/Streaming-demo/{}/session/", stream_id);
+            let update_content = cdn_m3u8_body.replace("segment/", &url_segment)
+            .replace("session/", &url_session);
+            // Tạo response với headers
+            let mut response = Response::ok(&update_content)?;
+            let _ = set_header_response_hls(&mut response).await;
+            Ok(response)
         }
         //for cdn streams server
         p if p.starts_with("/streams/") => {
@@ -130,6 +145,7 @@ async fn fetch(req: Request, env: Env, _ctx : Context) -> Result<Response> {
                 "https://stream_viewer_counter.worker/connect?stream_id={}&viewer_id={}", 
                 &stream_id, &viewer_id
             )).await?;
+
             let mut cdn_url = format!("https://hls-r2-dev.ermis.network/streams/Streaming-demo/{}/{}",stream_id, stream_hls_method);
             //handle response
             if quality.len() != 0 {
