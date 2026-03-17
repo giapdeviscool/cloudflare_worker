@@ -2,14 +2,15 @@ use std::sync::Arc;
 
 use serde_json::json;
 use worker::*;
-use scc::{HashMap, HashSet, hash_map::Entry};
+use scc::{HashMap, hash_map::Entry};
 
 #[durable_object]
 #[allow(dead_code)]
 pub struct StreamViewerCounter {
     state: State,
     env: Env,
-    viewer_counter: Arc<HashMap<String, HashSet<String>>>,
+    // Thay HashSet<String> thành HashMap<String, u64> để lưu timestamp
+    viewer_counter: Arc<HashMap<String, HashMap<String, u64>>>,
 }
 
 impl DurableObject for StreamViewerCounter {
@@ -31,36 +32,24 @@ impl DurableObject for StreamViewerCounter {
                     .map(|(_, v)| v.to_string())
                     .unwrap_or("guest".to_string());
 
-                // You may want to extract viewer_id from query as well
-                let viewer_id = url.query_pairs()
-                    .find(|(k, _)| k == "viewer_id")
-                    .map(|(_, v)| v.to_string())
-                    .unwrap_or("guest".to_string());
-                self.increment_viewer_count(&stream_id, &viewer_id).await;
-                return Response::ok("Viewer count incremented");
-            }
-            "/totalviewer" => {
-                let stream_id = url.query_pairs()
-                    .find(|(k, _)| k == "stream_id")
-                    .map(|(_, v)| v.to_string())
-                    .unwrap_or("guest".to_string());
-                let count = self.get_viewer_count(&stream_id).await;
-                let body = json!({"count":count}).to_string();
-                return Response::ok(&body)
-            }
-            "/disconnect" => {
-                let stream_id = url.query_pairs()
-                    .find(|(k, _)| k == "stream_id")
-                    .map(|(_, v)| v.to_string())
-                    .unwrap_or("guest".to_string());
-
                 let viewer_id = url.query_pairs()
                     .find(|(k, _)| k == "viewer_id")
                     .map(|(_, v)| v.to_string())
                     .unwrap_or("guest".to_string());
                 
-                self.remove_viewer_count(&stream_id, &viewer_id).await;
-                return Response::ok("Viewer disconnected");
+                self.increment_viewer_count(&stream_id, &viewer_id).await;
+                return Response::ok("Viewer count incremented");
+            }
+            "/active-viewers" => {
+                let stream_id = url.query_pairs()
+                    .find(|(k, _)| k == "stream_id")
+                    .map(|(_, v)| v.to_string())
+                    .unwrap_or("guest".to_string());
+
+                // Lấy viewers hiện tại (chưa disconnect)
+                let active_count = self.get_active_viewer_count(&stream_id, 30).await; // TTL 60s
+                let body = json!({"active_viewer_count": active_count}).to_string();
+                return Response::ok(&body);
             }
             _ => Response::error("Not found", 404)
         }
@@ -70,35 +59,54 @@ impl DurableObject for StreamViewerCounter {
 impl StreamViewerCounter {
     pub async fn increment_viewer_count(&self, stream_id: &str, viewer_id: &str) {
         let viewer_counter = self.viewer_counter.clone();
+        let now = js_sys::Date::now() as u64; // Lấy timestamp hiện tại (milliseconds)
+        
         match viewer_counter.entry_async(stream_id.to_string()).await { 
             Entry::Occupied(entry_stream_id_occupied) => {
                 let viewer_list = entry_stream_id_occupied.get();
-                let _ = viewer_list.insert_async(viewer_id.to_string()).await;
+                // Lưu viewer_id -> timestamp
+                match viewer_list.entry_async(viewer_id.to_string()).await {                
+                    Entry::Occupied(mut entry_viewer_id_occupied) => {
+                        let viewer_timestamp = entry_viewer_id_occupied.get_mut();
+                        *viewer_timestamp = now;
+                    }
+                    Entry::Vacant(entry_viewer_id_vacant) => {
+                        let _ = entry_viewer_id_vacant.insert_entry(now);
+                    }
+                }
             }
             Entry::Vacant(entry_stream_id_vacant) => {
-                let new_viewers = HashSet::new();
-                let _ = new_viewers.insert_async(viewer_id.to_string()).await;
+                let new_viewers = HashMap::new();
+                let _ = new_viewers.insert_async(viewer_id.to_string(), now).await;
                 entry_stream_id_vacant.insert_entry(new_viewers);
             }
         }
     }
 
-    pub async fn get_viewer_count(&self, stream_id: &str) -> usize{
+
+    /// Get active viewers (chưa timeout)
+    /// ttl_seconds: nếu viewer không ping trong thời gian này được coi là disconnect
+    pub async fn get_active_viewer_count(&self, stream_id: &str, ttl_seconds: u64) -> u32 {
         let viewer_counter = self.viewer_counter.clone();
+        let now = js_sys::Date::now() as u64;
+        let ttl_ms = ttl_seconds * 1000;
+        
         match viewer_counter.entry_async(stream_id.to_string()).await {
             Entry::Occupied(entry_stream_id_occupied) => {
                 let viewer_session = entry_stream_id_occupied.get();
-                viewer_session.len()
+                let mut active_count = 0;
+                // Duyệt qua tất cả viewers, đếm những cái chưa timeout
+                viewer_session.iter_async(|_, timestamp| {
+                    if now.saturating_sub(*timestamp) < ttl_ms {
+                        active_count += 1;
+                    }
+                    true
+                }).await;
+
+                active_count
             }
             Entry::Vacant(_) => 0,
         }
     }
 
-    pub async fn remove_viewer_count(&self, stream_id: &str, viewer_id: &str) {
-        let viewer_counter = self.viewer_counter.clone();
-        if let Entry::Occupied(entry) = viewer_counter.entry_async(stream_id.to_string()).await {
-            let viewer_list = entry.get();
-            let _ = viewer_list.remove_async(viewer_id).await;
-        }
-    }
 }

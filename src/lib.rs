@@ -19,14 +19,49 @@ async fn set_header_response_hls(response : &mut Response) -> Result<()>{
     Ok(())
 }
 
+async fn send_hls_viewer_count_to_server(
+    server_url : String,
+    active_data: ActiveViewerResponse
+) -> Result<()> {
+
+    let payload = json!({
+        "viewer_count": active_data.active_viewer_count
+    });
+
+    let mut request_init = RequestInit::new();
+    request_init.with_method(Method::Put);
+    let headers = Headers::new();
+    headers.set("Content-Type", "application/json")?;
+    request_init.with_headers(headers);
+    request_init.with_body(Some(payload.to_string().into()));
+    
+    let request = Request::new_with_init(&server_url, &request_init)?;
+    let server_response = Fetch::Request(request).send().await?;
+    let status = server_response.status_code();
+    
+    if (200..300).contains(&status) {
+        console_log!("[Worker] HLS viewer count sent successfully to {}", server_url);
+        Ok(())
+    } else {
+        console_log!("[Worker] Failed to send viewer count to {}: {}", server_url, status);
+        Err("Failed to send viewer count".into())
+    }
+}
+
 #[derive(Deserialize, Debug)]
 pub struct CountResponse {
-    count: usize,
+    viewer_count: u32,
+}
+
+#[derive(Deserialize, Debug)]
+#[allow(dead_code)]
+pub struct ActiveViewerResponse {
+    active_viewer_count: u32,
 }
 
 #[event(fetch)]
 async fn fetch(req: Request, env: Env, _ctx : Context) -> Result<Response> {
-
+    
     let url =req.url()?;
     let path = url.path();
     let origin = req.headers().get("origin").ok().flatten().unwrap_or("".to_string());
@@ -63,26 +98,7 @@ async fn fetch(req: Request, env: Env, _ctx : Context) -> Result<Response> {
             let viewer_id = extract_stream_id(&req);
             let stream_counter_do = env.durable_object("STREAM_VIEWER_COUNT")?;
             let stream_counter_do_stub = stream_counter_do.id_from_name(&stream_id)?.get_stub()?;
-            if stream_hls_method == "counter" {
-                let mut response = stream_counter_do_stub.fetch_with_str(&format!(
-                "https://stream_viewer_counter.worker/totalviewer?stream_id={}", 
-                &stream_id
-                )).await?;
-                
-                let body: CountResponse = response.json().await?;
-                console_log!("Increment response: {:#?}", body);
-                return Response::ok(json!({"count":body.count}).to_string());
-            }
-            if stream_hls_method == "disconnect" {
-                let mut response = stream_counter_do_stub.fetch_with_str(&format!(
-                "https://stream_viewer_counter.worker/disconnect?stream_id={}&viewer_id={}", 
-                &stream_id, &viewer_id
-                )).await?;
-                let body: CountResponse = response.json().await?;
-                console_log!("Decrement response: {:#?}", body);
-                return Response::ok(json!({"count":body.count}).to_string());
-            }
-            
+           
             stream_counter_do_stub.fetch_with_str(&format!(
                 "https://stream_viewer_counter.worker/connect?stream_id={}&viewer_id={}", 
                 &stream_id, &viewer_id
@@ -93,11 +109,28 @@ async fn fetch(req: Request, env: Env, _ctx : Context) -> Result<Response> {
             if quality.len() != 0 {
                 cdn_url = format!("https://stream-gate-i9.ermis.network/stream-gate/hls/Streaming-demo/{}/{}/{}",stream_id,quality,stream_hls_method);
             } 
+            
+            // Chỉ gửi count khi request playlist (master hoặc media)
+            if stream_hls_method.ends_with(".m3u8") || stream_hls_method == "playlist.m3u8" || stream_hls_method == "master.m3u8" {
+                let update_counter_url = format!("https://stream-gate-i9.ermis.network/stream-gate/hls/Streaming-demo/{}/upsert/viewers/count",stream_id);
+            
+                
+                // Get active viewer count
+                let mut active_response = stream_counter_do_stub.fetch_with_str(&format!(
+                    "https://stream_viewer_counter.worker/active-viewers?stream_id={}",
+                    &stream_id
+                    )).await?;
+                let active_data: ActiveViewerResponse = active_response.json().await?;
+                
+                let _ = send_hls_viewer_count_to_server(update_counter_url, active_data).await;
+            }
+            
             let mut cdn_res = Fetch::Url(cdn_url.parse()?).send().await?;
             let cdn_m3u8_body = cdn_res.text().await?;
             let url_segment = format!("https://stream-gate-i9.ermis.network/stream-gate/hls/Streaming-demo/{}/segment/", stream_id);
             let url_session = format!("https://stream-gate-i9.ermis.network/stream-gate/hls/Streaming-demo/{}/session/", stream_id);
-            let update_content = cdn_m3u8_body.replace("segment/", &url_segment)
+            let update_content = cdn_m3u8_body
+            .replace("segment/", &url_segment)
             .replace("session/", &url_session);
             // Tạo response với headers
             let mut response = Response::ok(&update_content)?;
@@ -121,25 +154,6 @@ async fn fetch(req: Request, env: Env, _ctx : Context) -> Result<Response> {
             let viewer_id = extract_stream_id(&req);
             let stream_counter_do = env.durable_object("STREAM_VIEWER_COUNT")?;
             let stream_counter_do_stub = stream_counter_do.id_from_name(&stream_id)?.get_stub()?;       
-            if stream_hls_method == "counter" {
-                let mut response = stream_counter_do_stub.fetch_with_str(&format!(
-                "https://stream_viewer_counter.worker/totalviewer?stream_id={}", 
-                &stream_id
-                )).await?;
-                
-                let body: CountResponse = response.json().await?;
-                console_log!("Increment response: {:#?}", body);
-                return Response::ok(json!({"count":body.count}).to_string());
-            }
-            if stream_hls_method == "disconnect" {
-                let mut response = stream_counter_do_stub.fetch_with_str(&format!(
-                "https://stream_viewer_counter.worker/disconnect?stream_id={}&viewer_id={}", 
-                &stream_id, &viewer_id
-                )).await?;
-                let body: CountResponse = response.json().await?;
-                console_log!("Decrement response: {:#?}", body);
-                return Response::ok(json!({"count":body.count}).to_string());
-            }
             
             stream_counter_do_stub.fetch_with_str(&format!(
                 "https://stream_viewer_counter.worker/connect?stream_id={}&viewer_id={}", 
@@ -151,6 +165,21 @@ async fn fetch(req: Request, env: Env, _ctx : Context) -> Result<Response> {
             if quality.len() != 0 {
                 cdn_url = format!("https://hls-r2-dev.ermis.network/streams/Streaming-demo/{}/{}/{}",stream_id,quality,stream_hls_method);
             } 
+            
+            // ✅Chỉ gửi count khi request playlist (master hoặc media)
+            if stream_hls_method.ends_with(".m3u8") || stream_hls_method == "playlist.m3u8" || stream_hls_method == "master.m3u8" {
+                let cdn_server_url = format!("https://hls-r2-dev.ermis.network/streams/Streaming-demo/{}/upsert/viewers/count",stream_id);
+                
+                // Get active viewer count
+                let mut active_response = stream_counter_do_stub.fetch_with_str(&format!(
+                    "https://stream_viewer_counter.worker/active-viewers?stream_id={}",
+                    &stream_id
+                    )).await?;
+                let active_data: ActiveViewerResponse = active_response.json().await?;
+                
+                let _ = send_hls_viewer_count_to_server(cdn_server_url,  active_data).await;
+            }
+
             let mut cdn_res = Fetch::Url(cdn_url.parse()?).send().await?;
             let cdn_m3u8_body = cdn_res.text().await?;
             // Tạo response với headers

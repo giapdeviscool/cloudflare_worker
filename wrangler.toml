@@ -2,7 +2,7 @@ name = "cloudflare"
 main = "build/worker/shim.mjs"
 compatibility_date = "2026-03-11"
 account_id = "07d4a1549593e39505d8b95ed2ad9dcd"
-
+# account_id = "76de7331774b4962b875617940fc6245"
 [build]
 command = "cargo install -q worker-build && worker-build --release"
 
