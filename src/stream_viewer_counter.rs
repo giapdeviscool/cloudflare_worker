@@ -47,7 +47,7 @@ impl DurableObject for StreamViewerCounter {
                     .unwrap_or("guest".to_string());
 
                 // Lấy viewers hiện tại (chưa disconnect)
-                let active_count = self.get_active_viewer_count(&stream_id, 30).await; // TTL 60s
+                let active_count = self.get_active_viewer_count(&stream_id,30).await; // TTL 60s
                 let body = json!({"active_viewer_count": active_count}).to_string();
                 return Response::ok(&body);
             }
@@ -95,13 +95,23 @@ impl StreamViewerCounter {
             Entry::Occupied(entry_stream_id_occupied) => {
                 let viewer_session = entry_stream_id_occupied.get();
                 let mut active_count = 0;
+                let mut viewers_to_remove = Vec::new();
+                console_log!("ses : {:#?}", viewer_session);
                 // Duyệt qua tất cả viewers, đếm những cái chưa timeout
-                viewer_session.iter_async(|_, timestamp| {
+                viewer_session.iter_async(|viewer_id, timestamp| {
                     if now.saturating_sub(*timestamp) < ttl_ms {
                         active_count += 1;
+                    } else {
+                        // Collect timeout viewers để xóa sau
+                        viewers_to_remove.push(viewer_id.clone());
                     }
                     true
                 }).await;
+
+                // Xóa các viewers timeout (sau khi duyệt xong)
+                for viewer_id in viewers_to_remove {
+                    let _ = viewer_session.remove_async(&viewer_id).await;
+                }
 
                 active_count
             }

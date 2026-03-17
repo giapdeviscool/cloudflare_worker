@@ -27,7 +27,7 @@ async fn send_hls_viewer_count_to_server(
     let payload = json!({
         "viewer_count": active_data.active_viewer_count
     });
-
+    console_log!("viewer count : {:#?}", payload);
     let mut request_init = RequestInit::new();
     request_init.with_method(Method::Put);
     let headers = Headers::new();
